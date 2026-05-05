@@ -19,14 +19,20 @@ func main() {
 		log.Fatal("DISCORD_WEBHOOK_URL is required")
 	}
 
+	host := os.Getenv("HOST")
+	if host == "" {
+		host = "127.0.0.1"
+	}
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
 
+	addr := host + ":" + port
 	handler := NewWebhookHandler(discordURL)
 	http.HandleFunc("/webhook", handler.HandleWebhook)
 
-	fmt.Printf("listening on :%s\n", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	fmt.Printf("listening on %s\n", addr)
+	log.Fatal(http.ListenAndServe(addr, nil))
 }
