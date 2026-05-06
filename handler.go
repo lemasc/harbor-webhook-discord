@@ -20,10 +20,16 @@ const (
 
 type WebhookHandler struct {
 	discordURL string
+	debouncer  *PushDebouncer
 }
 
 func NewWebhookHandler(discordURL string) *WebhookHandler {
-	return &WebhookHandler{discordURL: discordURL}
+	h := &WebhookHandler{discordURL: discordURL}
+	h.debouncer = NewPushDebouncer(func(event HarborEvent) error {
+		payload := buildPushPayload(event)
+		return sendDiscordWebhook(h.discordURL, *payload)
+	})
+	return h
 }
 
 func (h *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
@@ -47,25 +53,24 @@ func (h *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var payload *DiscordPayload
 	switch event.Type {
 	case EventPushArtifact:
-		payload = buildPushPayload(event)
-	case EventQuotaExceed:
-		payload = buildQuotaPayload(event)
-	default:
+		h.debouncer.Add(event)
+		log.Printf("queued %s event for %s", event.Type, event.EventData.Repository.FullName)
 		w.WriteHeader(http.StatusNoContent)
 		return
+	case EventQuotaExceed:
+		payload := buildQuotaPayload(event)
+		if err := sendDiscordWebhook(h.discordURL, *payload); err != nil {
+			log.Printf("discord webhook: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		log.Printf("forwarded %s event for %s", event.Type, event.EventData.Repository.FullName)
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.WriteHeader(http.StatusNoContent)
 	}
-
-	if err := sendDiscordWebhook(h.discordURL, *payload); err != nil {
-		log.Printf("discord webhook: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	log.Printf("forwarded %s event for %s", event.Type, event.EventData.Repository.FullName)
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func buildPushPayload(event HarborEvent) *DiscordPayload {
@@ -77,15 +82,42 @@ func buildPushPayload(event HarborEvent) *DiscordPayload {
 		{Name: "Pushed by", Value: event.Operator, Inline: true},
 	}
 
+	// Group resources by digest so multiple tags for the same image collapse into one block.
+	type group struct {
+		tags   []string
+		digest string
+		url    string
+	}
+	seen := map[string]*group{}
+	order := []string{}
 	for _, res := range event.EventData.Resources {
+		g, ok := seen[res.Digest]
+		if !ok {
+			g = &group{digest: res.Digest, url: res.ResourceURL}
+			seen[res.Digest] = g
+			order = append(order, res.Digest)
+		}
 		tag := res.Tag
 		if tag == "" {
 			tag = "(untagged)"
 		}
+		g.tags = append(g.tags, tag)
+	}
+
+	for _, digest := range order {
+		g := seen[digest]
+		tagValues := make([]string, len(g.tags))
+		for i, t := range g.tags {
+			tagValues[i] = fmt.Sprintf("`%s`", t)
+		}
+		tagLabel := "Tag"
+		if len(g.tags) > 1 {
+			tagLabel = "Tags"
+		}
 		fields = append(fields,
-			EmbedField{Name: "Tag", Value: fmt.Sprintf("`%s`", tag), Inline: true},
-			EmbedField{Name: "Digest", Value: fmt.Sprintf("`%s`", shortDigest(res.Digest)), Inline: true},
-			EmbedField{Name: "Image", Value: res.ResourceURL, Inline: false},
+			EmbedField{Name: tagLabel, Value: strings.Join(tagValues, "\n"), Inline: true},
+			EmbedField{Name: "Digest", Value: fmt.Sprintf("`%s`", shortDigest(digest)), Inline: true},
+			EmbedField{Name: "Image", Value: g.url, Inline: false},
 		)
 	}
 
