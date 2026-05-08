@@ -22,6 +22,6 @@ type Repository struct {
 	DateCreated int64  `json:"date_created"`
 	Name        string `json:"name"`
 	Namespace   string `json:"namespace"`
-	FullName    string `json:"full_name"`
-	Type        string `json:"type"`
+	FullName    string `json:"repo_full_name"`
+	Type        string `json:"repo_type"`
 }
