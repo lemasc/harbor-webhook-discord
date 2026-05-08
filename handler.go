@@ -55,6 +55,17 @@ func (h *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	switch event.Type {
 	case EventPushArtifact:
+		filtered := event.EventData.Resources[:0]
+		for _, res := range event.EventData.Resources {
+			if res.Tag != res.Digest {
+				filtered = append(filtered, res)
+			}
+		}
+		if len(filtered) == 0 {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		event.EventData.Resources = filtered
 		h.debouncer.Add(event)
 		log.Printf("queued %s event for %s", event.Type, event.EventData.Repository.FullName)
 		w.WriteHeader(http.StatusNoContent)
